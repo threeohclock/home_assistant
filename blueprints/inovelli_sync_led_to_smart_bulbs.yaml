@@ -1,0 +1,90 @@
+blueprint:
+  name: Sync Inovelli LEDs to Light Group (Multi-Switch)
+  description: Maps Home Assistant hs_color and brightness to Inovelli Z-Wave JS configuration parameters. Sets LED intensity to 0 when the light group is off.
+  domain: automation
+  input:
+    target_light:
+      name: Target Light Group
+      description: The smart bulb group driving the state changes.
+      selector:
+        entity:
+          domain: light
+    inovelli_switches:
+      name: Target Inovelli Switches
+      description: The Inovelli switches to sync.
+      selector:
+        entity:
+          domain: light
+          multiple: true
+
+mode: restart
+
+trigger:
+  - trigger: state
+    entity_id: !input target_light
+    to: "on"
+  - trigger: state
+    entity_id: !input target_light
+    to: "off"
+  - trigger: state
+    entity_id: !input target_light
+    attribute: brightness
+  - trigger: state
+    entity_id: !input target_light
+    attribute: hs_color
+
+action:
+  - variables:
+      light_entity: !input target_light
+      switches: !input inovelli_switches
+      is_off: "{{ states(light_entity) == 'off' }}"
+      
+      # Default hue to 0 when light is off to avoid template errors
+      hue_val: "{{ state_attr(light_entity, 'hs_color')[0] | default(0) if not is_off else 0 }}"
+      inovelli_color: "{{ ((hue_val / 360.0) * 255) | int(0) }}"
+      
+      # Set intensity to 0 if off; otherwise scale 1-10
+      inovelli_intensity: >
+        {% if is_off %}
+          0
+        {% else %}
+          {{ max(1, ((state_attr(light_entity, 'brightness') | default(255)) / 255.0 * 10) | int(10)) }}
+        {% endif %}
+
+  - repeat:
+      for_each: "{{ switches }}"
+      sequence:
+        - variables:
+            switch_entity: "{{ repeat.item }}"
+            switch_model: "{{ device_attr(device_id(switch_entity), 'model') | string }}"
+            
+            p_color: >
+              {% if 'LZW30' in switch_model %} 5
+              {% elif 'LZW36' in switch_model %} 18
+              {% elif 'LZW31' in switch_model %} 13
+              {% else %} 0
+              {% endif %}
+              
+            p_intensity: >
+              {% if 'LZW30' in switch_model %} 6
+              {% elif 'LZW36' in switch_model %} 19
+              {% elif 'LZW31' in switch_model %} 14
+              {% else %} 0
+              {% endif %}
+
+        - condition: template
+          value_template: "{{ p_color | int > 0 }}"
+          
+        - action: zwave_js.set_config_parameter
+          target:
+            entity_id: "{{ switch_entity }}"
+          data:
+            parameter: "{{ p_color }}"
+            value: "{{ inovelli_color }}"
+            
+        - action: zwave_js.set_config_parameter
+          target:
+            entity_id: "{{ switch_entity }}"
+          data:
+            parameter: "{{ p_intensity }}"
+            value: "{{ inovelli_intensity }}"
